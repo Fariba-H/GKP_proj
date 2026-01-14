@@ -5,27 +5,25 @@ include("utils.jl")
 include("2mode_output_state.jl")
 include("pdf_sampling.jl")
 
-function run(Δ=0.1, K=30, θr=0.38467pi, output_dir="outputs/")
+function run(Δ=0.1, K=200, θr=0.38467pi, output_dir="outputs/", q_dens=100000)
     β = Δ^2
     a = √(π / 2)
     q_scl = √2a
-    rng_q_max = 40 
-    n_qs = 2000001
 
-    n_bins = 300
+    n_bins = 1000
 
     # Magic state in plus-minus basis
-    Trg_p, Trg_m = cos(pi / 8) + 0.0im, 0.0 - im * sin(pi / 8) 
+    Trg_p, Trg_m = cos(pi / 8) + 0.0im, 0.0 - im * sin(pi / 8)
 
-    pp, pm, mm = pp_pm_mm(Δ, K)
+    zrzr = zero_zero(Δ, K)
+    onon = one_one(Δ, K)
+    zron = zero_one(Δ, K)
+    std_basis_inner_prods = InnerProducts(zrzr, zron, onon)
+    pp, pm, mm = pp_pm_mm(std_basis_inner_prods)
 
-    rng_q = 40
-
-    SpSp = rotated_00(θr, Δ, K)
-    SmSm = rotated_11(θr, Δ, K)
-    SpSm = rotated_01(θr, Δ, K)
-
-    pdf_q, qs, ths, phs = calc_pdf_q(θr, Δ, SpSp, SpSm, SmSm, pp, pm, mm, n_qs, q_scl, rng_q)
+    pdf_q, qs, ths, phs = calc_pdf_q(θr, Δ, std_basis_inner_prods, q_dens, q_scl)
+    int_pdf = simpson_integrate(qs, pdf_q)  # just to check normalization
+    println("  θr/π= $(rpad(round(θr/π; digits=5), 7, '0')), pdf err: $(rpad(abs(1 - int_pdf), 5, '0')), q_hw: $(round(qs[end]; digits=2))")
     pdf_theta, theta_bins = calc_pdf_theta(pdf_q, qs, ths, n_bins)
     pdf_phi, phi_bins = calc_pdf_phi(pdf_q, qs, phs, n_bins)
     pdf_θφ, g_θs, g_φs = calc_pdf_2d(pdf_q, qs, ths, phs, n_bins)
@@ -90,7 +88,7 @@ function run(Δ=0.1, K=30, θr=0.38467pi, output_dir="outputs/")
     end
     # Write parameters to text file
     open(joinpath(output_dir, cmn_file_name * "_params.txt"), "a") do f
-        write(f, "th_rot/π: $(θr/pi)\nβ: $β\nK: $K\nn_qs: $n_qs\nq_scl: $q_scl\nq_range_max: $rng_q_max\nn_bins: $n_bins\n")
+        write(f, "th_rot/π: $(θr/pi)\nβ: $β\nK: $K\nq_scl: $q_scl\nq_dens: $q_dens\nn_bins: $n_bins\n")
         #  write(f, "n_samples: $n_samples\n")
     end
     a = round(q_scl; digits=5)
@@ -103,7 +101,7 @@ function run(Δ=0.1, K=30, θr=0.38467pi, output_dir="outputs/")
     # Plot q vs phi at maxima points
     save_scatter_plot(q_maxima, phi_maxima, q_scl, π, "ϕ vs q at PDF_q maxima, " * cmn_title, "q / $(round(q_scl, digits=4))", "ϕ / π", output_dir, cmn_file_name * "_max_q_phi", x_rng=(0, 6), ylim=(-1, 1))
     save_scatter_plot(qs, fidelities, q_scl, 1, "Fidelity vs q, $cmn_title",
-    "q (/√2 a = $a )", "Fidelity", output_dir, cmn_file_name * "_fidelity_q", x_rng=(0, 10); x_ticks=-6:6, ylim=(0, 1))
+        "q (/√2 a = $a )", "Fidelity", output_dir, cmn_file_name * "_fidelity_q", x_rng=(0, 10); x_ticks=-6:6, ylim=(0, 1))
 
     save_heatmap(pdf_θφ, g_θs, g_φs, "Joint PDF of θ and ϕ, $cmn_title",
         output_dir, cmn_file_name * "_pdf_2d"; prc=0.99, color=Plots.cgrad(:greys, rev=true))
@@ -123,7 +121,7 @@ println("Output directory: $output_dir")
 for (β, θr) in zip(βrange, θrange)
     Δ = √β
     println("Δ= $(round(Δ; digits=6)), θr: $(rpad(round(θr/π; digits=7), 7, '0'))π ---", Dates.format(Dates.now(), " yyyy-mm-dd HH:MM:SS"))
-    run(Δ, 70, θr, output_dir)
+    run(Δ, 200, θr, output_dir)
 end
 
 ## END

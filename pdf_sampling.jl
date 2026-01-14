@@ -1,35 +1,99 @@
 
-function calc_pdf_q(θ, Δ, SpSp, SpSm, SmSm, pp, pm, mm, n_qs, scl, rng)
-    if iseven(n_qs)
-        n_qs += 1
-    end
-    qs = range(-rng * scl, rng * scl, length=n_qs) |> collect
-    ths = zeros(n_qs)
-    phs = zeros(n_qs)
-    pdf_q = zeros(n_qs)
-    for (i, q) in enumerate(qs)
-        Cp = Cplus(q, θ, Δ)
-        Cm = Cminus(q, θ, Δ)
-        if isnan(Cp) || isnan(Cm)
-            println("in calc_pdf_q:  θ/π= $(round(θ/pi; digits=3)), q= $(round(q; digits=3)), Cp= $Cp, Cm= $Cm")
+# Container for inner products
+struct InnerProducts
+    zrzr::Real
+    zron::Number
+    onon::Real
+end
+
+pp_pm_mm(zrzr::Real, zron::Real, onon::Real) = (
+    (zrzr + onon + 2 * zron) / 2,
+    (zrzr - onon) / 2,
+    (zrzr + onon - 2 * zron) / 2
+)
+
+pp_pm_mm(zrzr::Real, zron::Complex, onon::Real) = (
+    (zrzr + onon + 2 * real(zron)) / 2,
+    (zrzr - onon - zron + conj(zron)) / 2,
+    (zrzr + onon - 2 * real(zron)) / 2
+)
+
+pp_pm_mm(zo_inn_prod::InnerProducts) = pp_pm_mm(zo_inn_prod.zrzr, zo_inn_prod.zron, zo_inn_prod.onon)
+
+
+# prob dens (pdf) of measuring q
+function prob_dens(zrzr::Real, zron::Number, onon::Real, pp::Real, pm::Number, mm::Real, Cp::Number, Cm::Number)
+    (abs2(Cp) * pp + 2real(conj(Cp) * Cm * pm) + abs2(Cm) * mm) / # |<q|⊗1|ψ>|^2
+    (zrzr * pp + 2real(zron * pm) + onon * mm) # <ψ|ψ>
+end
+
+
+function fidelity(Cp::Number, Cm::Number, Trg_p::Number, Trg_m::Number, pp::Real, pm::Number, mm::Real)
+    # Magic target:
+    # Trg_p = cos(pi / 8)
+    # Trg_m = -im * sin(pi / 8)
+    abs2(conj(Trg_p) * Cp * pp + conj(Trg_m) * Cm * mm + conj(Trg_p) * Cm * pm + conj(Trg_m) * Cp * conj(pm)) /  # |<Target|Out>|^2
+    real(abs2(Trg_p) * pp + abs2(Trg_m) * mm + 2real(conj(Trg_p) * Trg_m * pm)) /  # <Target|Target>
+    real(abs2(Cp) * pp + abs2(Cm) * mm + 2real(conj(Cp) * Cm * pm))                # <Out|Out>
+end
+
+function calc_pdf_q(θ, Δ, std_basis_inn_prods::InnerProducts, q_dens::Real, q_scl::Real; cutoff::Real=1e-7)
+    zrzr = std_basis_inn_prods.zrzr
+    zron = std_basis_inn_prods.zron
+    onon = std_basis_inn_prods.onon
+    pp, pm, mm = pp_pm_mm(std_basis_inn_prods)
+
+    qs = Float64[]
+    ths = Float64[]
+    phs = Float64[]
+    pdf_q = Float64[]
+
+    dq = q_scl / q_dens
+    j = 0
+    tot_prb = 0
+    while abs(1-tot_prb) > cutoff
+        for p in (-1, 1)
+            q = p * j * dq
+            Cp = Cplus(q, θ, Δ)
+            Cm = Cminus(q, θ, Δ)
+            if isnan(Cp) || isnan(Cm)
+                println(stderr, "In calc_pdf_q:  θ/π= $(θ/pi), q= $q, Cp= $Cp, Cm= $Cm, pdf_q= NaN")
+                continue
+            end
+            prb = prob_dens(zrzr, zron, onon, pp, pm, mm, Cp, Cm)
+            if isnan(prb)
+                println(stderr, "In calc_pdf_q:  θ/π= $(θ/pi), q= $q, Cp= $Cp, Cm= $Cm, pdf_q= $prb")
+                continue
+            end
+            tot_prb += prb * dq
+            push!(qs, q)
+            push!(ths, 2 * atan(abs(Cm), abs(Cp)))
+            push!(phs, (Cp == 0) ? 0 : angle(Cm / Cp))
+            push!(pdf_q, prb)
+            if j == 0
+                break
+            end
         end
-        # |out> = cos th/2 |+> + e^iph sin th/2 |->
-        ths[i] = 2 * atan(abs(Cm), abs(Cp))
-        phs[i] = (Cp == 0) ? 0 : angle(Cm / Cp)
-        pdf_q[i] = probability(SpSp, SpSm, SmSm, pp, pm, mm, Cp, Cm)
-        if isnan(pdf_q[i])
-            println("in calc_pdf_q:  θ/π= $(round(θ/pi; digits=3)), q= $(round(q; digits=3)), Cp= $Cp, Cm= $Cm, pdf_q= $pdf_q")
-        end
+        j += 1
     end
-    # Normalize the probability density
-    sprq = simpson_integrate(qs, pdf_q)
-    # println("Integral of probability density of q: $(round(sprq; digits=3))")
-    pdf_q = pdf_q ./ sprq
+
+    # sort qs and reorder other arrays accordingly
+    idx = sortperm(qs)
+    qs = qs[idx]
+    pdf_q = pdf_q[idx]
+    ths = ths[idx]
+    phs = phs[idx]
+
     return pdf_q, qs, ths, phs
 end
 
 #finding probability of the each θ(outputstate)
 function calc_pdf_theta(pdf_q, qs, ths, n_bins=1000)
+    nn_bins = min(n_bins, length(pdf_q)÷10)
+    if nn_bins < n_bins
+        println(stderr, "Warning, n_bins = $nn_bins, increase number of q samples for higher resolution.")
+    end
+    n_bins = nn_bins
     theta_grid = range(0, π, length=n_bins + 1) |> collect
     pdf_theta = zeros(n_bins)           # will store g(θ) values
     n_qs = length(qs)
@@ -57,6 +121,11 @@ end
 
 # Finding probability of each φ (output state)
 function calc_pdf_phi(pdf_q, qs, phs, n_bins=1000)
+    nn_bins = min(n_bins, length(pdf_q)÷10)
+    if nn_bins < n_bins
+        println(stderr, "Warning, n_bins = $nn_bins, increase number of q samples for higher resolution.")
+    end
+    n_bins = nn_bins
     phg_min = -π
     phg_max = π
     phi_grid = range(phg_min, phg_max, length=n_bins + 1) |> collect
@@ -85,6 +154,11 @@ end
 
 
 function calc_pdf_2d(pdf_q, qs, ths, phs, n_bins=1000)
+    nn_bins = min(n_bins, length(pdf_q)÷10)
+    if nn_bins < n_bins
+        println(stderr, "Warning, n_bins = $nn_bins, increase number of q samples for higher resolution.")
+    end
+    n_bins = nn_bins
     # Define the number of bins for θ and φ
     np_bins_θ = n_bins
     np_bins_φ = n_bins
@@ -152,7 +226,6 @@ function sampling_q(cdf, qs)
     return q
 end
 
-
 function sampling(θ, Δ, pdf_q, qs, ns=10001)
     δq = qs[2] - qs[1]
     # Compute the CDF using the cumulative sum. Multiply by the bin width δq to approximate the integral.
@@ -171,7 +244,7 @@ function sampling(θ, Δ, pdf_q, qs, ns=10001)
 end
 
 
-function calc_fidelities_q(qs::Vector{<:Real}, θr::Real, Δ::Real, Trg_p::Complex, Trg_m::Complex, pp::Complex, pm::Complex, mm::Complex; K::Integer=100, cutoff::Real=1e-10)
+function calc_fidelities_q(qs::Vector{<:Real}, θr::Real, Δ::Real, Trg_p::Number, Trg_m::Number, pp::Real, pm::Number, mm::Real; K::Integer=1000, cutoff::Real=1e-10)
     out_fids = zeros(length(qs))
     for (i, q) in enumerate(qs)
         Cp = Cplus(q, θr, Δ, K; cutoff=cutoff)
